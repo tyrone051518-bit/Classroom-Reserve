@@ -21,6 +21,9 @@ import (
 
 func init() {
 	// 1. Load environment name
+	fmt.Println("SMTP_HOST:", utils_v1.GetEnv("SMTP_HOST"))
+fmt.Println("SMTP_USER:", utils_v1.GetEnv("SMTP_USER"))
+fmt.Println("SMTP_PASSWORD:", utils_v1.GetEnv("SMTP_PASSWORD"))
 	env := utils_v1.GetEnv("ENVIRONMENT")
 	if env == "" {
 		env = "local"
