@@ -86,7 +86,14 @@ func SendVerificationEmail(email string, verificationToken string) error {
 
 	smtpAddress := fmt.Sprintf("%s:%s", smtpHost, smtpPort)
 
-	conn, err := net.DialTimeout("tcp", smtpAddress, 10*time.Second)
+	// Port 465 uses direct TLS from the start
+	tlsConfig := &tls.Config{ServerName: smtpHost}
+	conn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: 10 * time.Second},
+		"tcp",
+		smtpAddress,
+		tlsConfig,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to connect to SMTP server: %w", err)
 	}
@@ -96,11 +103,6 @@ func SendVerificationEmail(email string, verificationToken string) error {
 		return fmt.Errorf("failed to create SMTP client: %w", err)
 	}
 	defer client.Close()
-
-	tlsConfig := &tls.Config{ServerName: smtpHost}
-	if err = client.StartTLS(tlsConfig); err != nil {
-		return fmt.Errorf("failed to start TLS: %w", err)
-	}
 
 	auth := smtp.PlainAuth("", smtpUser, smtpPassword, smtpHost)
 	if err = client.Auth(auth); err != nil {
