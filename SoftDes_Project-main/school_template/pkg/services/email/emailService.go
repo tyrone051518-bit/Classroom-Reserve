@@ -2,13 +2,15 @@ package emailService
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/smtp"
 	"os"
+	"time"
 )
 
-// GenerateVerificationToken creates a secure random token for email verification
 func GenerateVerificationToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -17,35 +19,29 @@ func GenerateVerificationToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// SendVerificationEmail sends an email with verification link
 func SendVerificationEmail(email string, verificationToken string) error {
-	// Get SMTP configuration from environment
-	smtpHost := os.Getenv("SMTP_HOST")
-	smtpPort := os.Getenv("SMTP_PORT")
-	smtpUser := os.Getenv("SMTP_USER")
+	smtpHost     := os.Getenv("SMTP_HOST")
+	smtpPort     := os.Getenv("SMTP_PORT")
+	smtpUser     := os.Getenv("SMTP_USER")
 	smtpPassword := os.Getenv("SMTP_PASSWORD")
-	appName := os.Getenv("PROJECT")
-	appURL := os.Getenv("APP_URL")
-	// Prefer explicit backend URL for verification links. If not set, fall back to localhost:8080
-	backendURL := os.Getenv("BACKEND_URL")
+	appName      := os.Getenv("PROJECT")
+	appURL       := os.Getenv("APP_URL")
+	backendURL   := os.Getenv("BACKEND_URL")
+
 	if backendURL == "" {
 		backendURL = "http://localhost:8080"
 	}
-
-	// Validate configuration
-	if smtpHost == "" || smtpPort == "" || smtpUser == "" {
-		return fmt.Errorf("SMTP configuration not set in environment variables")
-	}
-
 	if appURL == "" {
 		appURL = "http://localhost:3000"
 	}
+	if smtpHost == "" || smtpPort == "" || smtpUser == "" || smtpPassword == "" {
+		return fmt.Errorf("SMTP configuration incomplete")
+	}
 
-	// Build verification link pointing to backend verify endpoint
 	verificationLink := fmt.Sprintf("%s/api/public/v1/authentication/verify-email?token=%s", backendURL, verificationToken)
 
-	// Email body
 	subject := fmt.Sprintf("Verify Your Email - %s", appName)
+
 	body := fmt.Sprintf(`
 <!DOCTYPE html>
 <html>
@@ -81,7 +77,6 @@ func SendVerificationEmail(email string, verificationToken string) error {
 </html>
 	`, appName, verificationLink, verificationLink, verificationLink, appName)
 
-	// Setup message
 	message := []byte("To: " + email + "\r\n" +
 		"Subject: " + subject + "\r\n" +
 		"MIME-Version: 1.0\r\n" +
@@ -89,14 +84,46 @@ func SendVerificationEmail(email string, verificationToken string) error {
 		"\r\n" +
 		body)
 
-	// Send email
-	auth := smtp.PlainAuth("", smtpUser, smtpPassword, smtpHost)
 	smtpAddress := fmt.Sprintf("%s:%s", smtpHost, smtpPort)
 
-	err := smtp.SendMail(smtpAddress, auth, smtpUser, []string{email}, message)
+	conn, err := net.DialTimeout("tcp", smtpAddress, 10*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to send verification email: %w", err)
+		return fmt.Errorf("failed to connect to SMTP server: %w", err)
 	}
 
-	return nil
+	client, err := smtp.NewClient(conn, smtpHost)
+	if err != nil {
+		return fmt.Errorf("failed to create SMTP client: %w", err)
+	}
+	defer client.Close()
+
+	tlsConfig := &tls.Config{ServerName: smtpHost}
+	if err = client.StartTLS(tlsConfig); err != nil {
+		return fmt.Errorf("failed to start TLS: %w", err)
+	}
+
+	auth := smtp.PlainAuth("", smtpUser, smtpPassword, smtpHost)
+	if err = client.Auth(auth); err != nil {
+		return fmt.Errorf("SMTP auth failed — check SMTP_USER and SMTP_PASSWORD: %w", err)
+	}
+
+	if err = client.Mail(smtpUser); err != nil {
+		return fmt.Errorf("SMTP MAIL FROM failed: %w", err)
+	}
+	if err = client.Rcpt(email); err != nil {
+		return fmt.Errorf("SMTP RCPT TO failed: %w", err)
+	}
+
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("SMTP DATA failed: %w", err)
+	}
+	if _, err = w.Write(message); err != nil {
+		return fmt.Errorf("failed to write email body: %w", err)
+	}
+	if err = w.Close(); err != nil {
+		return fmt.Errorf("failed to close email writer: %w", err)
+	}
+
+	return client.Quit()
 }
