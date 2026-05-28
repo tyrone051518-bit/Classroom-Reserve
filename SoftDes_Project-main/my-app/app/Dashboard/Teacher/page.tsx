@@ -49,7 +49,7 @@ function mapApiRow(row: any): Room {
     time:      start && end ? `${start} – ${end}` : "—",
     startTime: row.start_time ?? "",
     endTime:   row.end_time   ?? "",
-    teacherId: row.teacher_id ?? undefined,
+    teacherId: row.teacher_id != null ? Number(row.teacher_id) : undefined,
   };
 }
 
@@ -64,6 +64,7 @@ function getCurrentMinutes(): number {
   return now.getHours() * 60 + now.getMinutes();
 }
 
+// Strict overlap: used for room occupancy (back-to-back is fine)
 function timesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
   const as = toMinutes(aStart);
   const ae = toMinutes(aEnd);
@@ -71,6 +72,17 @@ function timesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string
   const be = toMinutes(bEnd);
   if (as < 0 || ae < 0 || bs < 0 || be < 0) return false;
   return as < be && ae > bs;
+}
+
+// Inclusive overlap: used for teacher's own classes (back-to-back counts as conflict
+// because a teacher cannot be in two rooms at the same time)
+function timesOverlapInclusive(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  const as = toMinutes(aStart);
+  const ae = toMinutes(aEnd);
+  const bs = toMinutes(bStart);
+  const be = toMinutes(bEnd);
+  if (as < 0 || ae < 0 || bs < 0 || be < 0) return false;
+  return as < be && ae >= bs;
 }
 
 function getAuth() {
@@ -205,7 +217,6 @@ export default function Dashboard() {
     }
   };
 
-  // FIX 1: Safe calendar navigation — never mutate the existing Date object
   const prevMonth = () =>
     setCalDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
   const nextMonth = () =>
@@ -327,7 +338,6 @@ export default function Dashboard() {
           color:white; border-bottom:1px solid var(--card-border);
           letter-spacing:1px; width:100%; text-align:center;
         }
-        /* FIX 4: role="button" + button-like reset so it's accessible */
         .s-nav a {
           display:flex; align-items:center; gap:10px; padding:11px 14px; border-radius:8px;
           color:var(--muted); font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:600;
@@ -409,7 +419,6 @@ export default function Dashboard() {
         }
         .s-date-sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
 
-        /* FIX 3: hint bar is now a full-width row below the header, not crammed inside it */
         .hint-bar {
           display:flex; align-items:center; gap:10px; font-size:12px; color:var(--move);
           background:var(--move-dim); border:1px solid rgba(245,158,11,.25);
@@ -643,7 +652,6 @@ export default function Dashboard() {
           <div className="s-logo">CCSE</div>
           <nav className="s-nav">
             <div className="user-name-display-side">{userName}</div>
-            {/* FIX 4: Use <button> instead of <a> for clickable non-link elements */}
             <button className="s-nav a" role="button" onClick={() => setIsProfileOpen(true)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
@@ -681,7 +689,6 @@ export default function Dashboard() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
-              {/* FIX 2: Added missing "avail" / Available filter option */}
               <select
                 className="filter-btn"
                 value={statusFilter}
@@ -720,7 +727,6 @@ export default function Dashboard() {
                 <span className="s-room-count">{filteredRooms.length} Rooms</span>
               </div>
 
-              {/* FIX 3: Hint bar is now full-width below the header row, not crammed beside the room count */}
               {moveState.phase !== "idle" && (
                 <div className="hint-bar">
                   <span>
@@ -736,42 +742,64 @@ export default function Dashboard() {
 
               <div className="s-rooms-grid">
                 {filteredRooms.map((room) => {
-                  const isAvail    = room.status === "avail";
-                  const isVacant   = room.status === "vacant";
+                  const isAvail   = room.status === "avail";
+                  const isVacant  = room.status === "vacant";
                   const isOwnClass =
                     room.teacherId != null &&
                     teacherId      != null &&
-                    room.teacherId === teacherId;
+                    Number(room.teacherId) === Number(teacherId);
 
                   const isSource =
                     moveState.phase === "source-selected" &&
                     moveState.sourceId === room.id;
 
-                  // FIX 5: Overlap check now correctly queries OTHER occupied rooms in the
-                  // same room slot, NOT the candidate card itself (which is avail/vacant).
+                  // ── hasOverlap: fires when teacher picks a source class and we
+                  //    evaluate each avail/vacant card as a potential target room.
                   let hasOverlap = false;
                   if (moveState.phase === "source-selected" && (isAvail || isVacant)) {
                     const sourceRoom = rooms.find((r) => r.id === moveState.sourceId);
                     if (sourceRoom) {
-                      // Check if any OTHER occupied schedule in the same physical room conflicts
+                      // 1. Is the target room already occupied at the source's time?
                       hasOverlap = rooms.some((r) => {
-                        if (r.id === room.id) return false;          // skip the candidate itself
-                        if (r.room !== room.room) return false;      // same physical room only
-                        if (r.status !== "unavail") return false;    // only occupied rows matter
+                        if (r.id === room.id) return false;
+                        if (r.room !== room.room) return false;
+                        if (r.status !== "unavail") return false;
                         return timesOverlap(
                           sourceRoom.startTime,
                           sourceRoom.endTime,
                           r.startTime,
-                          r.endTime
+                          r.endTime,
                         );
                       });
+
+                      // 2. Would moving the class cause the teacher to be in two
+                      //    places at once? Use inclusive overlap so back-to-back
+                      //    classes (e.g. 11:00-12:30 then 12:30-14:00) are blocked
+                      //    — the teacher physically cannot travel between rooms in 0 min.
+                      if (!hasOverlap) {
+                        hasOverlap = rooms.some((r) => {
+                          if (r.id === moveState.sourceId) return false; // skip the class being moved
+                          if (r.teacherId == null) return false;
+                          if (Number(r.teacherId) !== Number(teacherId)) return false; // only MY classes
+                          if (!r.startTime || !r.endTime) return false;
+                          return timesOverlapInclusive(
+                            sourceRoom.startTime,
+                            sourceRoom.endTime,
+                            r.startTime,
+                            r.endTime,
+                          );
+                        });
+                      }
                     }
                   }
 
+                  // ── hasOverlapAsSource: fires when teacher picks a target room first
+                  //    and we evaluate each occupied card as a potential class to assign.
                   let hasOverlapAsSource = false;
                   if (moveState.phase === "target-selected" && isOwnClass) {
                     const targetRoom = rooms.find((r) => r.id === moveState.targetId);
                     if (targetRoom) {
+                      // 1. Is the target room already occupied at this class's time?
                       hasOverlapAsSource = rooms.some((r) => {
                         if (r.id === targetRoom.id) return false;
                         if (r.room !== targetRoom.room) return false;
@@ -780,6 +808,23 @@ export default function Dashboard() {
                         if (!room.startTime || !room.endTime || !r.startTime || !r.endTime) return false;
                         return timesOverlap(room.startTime, room.endTime, r.startTime, r.endTime);
                       });
+
+                      // 2. Would assigning this class put the teacher in two rooms at once?
+                      if (!hasOverlapAsSource) {
+                        hasOverlapAsSource = rooms.some((r) => {
+                          if (r.id === room.id) return false;            // skip the class being assigned
+                          if (r.id === moveState.targetId) return false; // skip the target slot itself
+                          if (r.teacherId == null) return false;
+                          if (Number(r.teacherId) !== Number(teacherId)) return false;
+                          if (!room.startTime || !room.endTime || !r.startTime || !r.endTime) return false;
+                          return timesOverlapInclusive(
+                            room.startTime,
+                            room.endTime,
+                            r.startTime,
+                            r.endTime,
+                          );
+                        });
+                      }
                     }
                   }
 
@@ -916,7 +961,6 @@ export default function Dashboard() {
                   <span className="cal-month">
                     {calDate.toLocaleString("default", { month: "long", year: "numeric" })}
                   </span>
-                  {/* FIX 1: Use pure functions that create new Date objects — no mutation */}
                   <div className="cal-nav">
                     <button onClick={prevMonth}>‹</button>
                     <button onClick={nextMonth}>›</button>
