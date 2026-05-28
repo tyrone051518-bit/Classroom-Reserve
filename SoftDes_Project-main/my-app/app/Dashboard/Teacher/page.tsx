@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,7 +13,6 @@ interface Room {
   professor: string;
   status: RoomStatus;
   time: string;
-  /** Raw "HH:MM" strings kept for overlap comparison */
   startTime: string;
   endTime: string;
   teacherId?: number;
@@ -22,8 +20,8 @@ interface Room {
 
 type MoveState =
   | { phase: "idle" }
-  | { phase: "source-selected"; sourceId: number }   // teacher clicked "Move this class" first
-  | { phase: "target-selected"; targetId: number };  // teacher clicked "Reserve" on a room first
+  | { phase: "source-selected"; sourceId: number }
+  | { phase: "target-selected"; targetId: number };
 
 const EVENT_DAYS: number[] = [3, 8, 15, 21];
 const API_BASE = "http://localhost:8080/api/private/v1";
@@ -55,18 +53,17 @@ function mapApiRow(row: any): Room {
   };
 }
 
-/** Convert "HH:MM" to total minutes for easy numeric comparison */
 function toMinutes(t: string): number {
   if (!t) return -1;
   const [h, m] = t.split(":").map(Number);
   return h * 60 + (m || 0);
 }
 
-/**
- * Returns true when [aStart, aEnd) overlaps [bStart, bEnd).
- * We treat times as half-open intervals so back-to-back classes
- * (e.g. 10:00-11:00 and 11:00-12:00) are NOT considered overlapping.
- */
+function getCurrentMinutes(): number {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
 function timesOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
   const as = toMinutes(aStart);
   const ae = toMinutes(aEnd);
@@ -100,11 +97,18 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter]   = useState<"all" | RoomStatus>("all");
   const [toast, setToast]                 = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
   const [loading, setLoading]             = useState(false);
-  const [calDate, setCalDate]             = useState(new Date());
+  const [currentMinute, setCurrentMinute] = useState<number>(() => getCurrentMinutes());
+  const [calDate, setCalDate]             = useState(() => new Date());
   const [isLogoutOpen, setIsLogoutOpen]   = useState(false);
   const [startTimeFilter, setStartTimeFilter] = useState<string>("all");
 
-  // ── Auth guard ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const updateCurrentMinute = () => setCurrentMinute(getCurrentMinutes());
+    updateCurrentMinute();
+    const interval = setInterval(updateCurrentMinute, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     const { token, userName: name } = getAuth();
     if (!token) {
@@ -120,7 +124,6 @@ export default function Dashboard() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  // ── Load Data ──────────────────────────────────────────────────────────────
   const loadRooms = useCallback(async () => {
     setLoading(true);
     const { token } = getAuth();
@@ -144,27 +147,25 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [loadRooms]);
 
-  // ── Teacher Actions ────────────────────────────────────────────────────────
   const selectSource = (id: number) => setMoveState({ phase: "source-selected", sourceId: id });
   const selectTarget = (id: number) => setMoveState({ phase: "target-selected", targetId: id });
   const cancelMove   = () => setMoveState({ phase: "idle" });
 
-  /** Executes the move/reserve — called once both source and target are known */
   const reserveRoom = async (sourceId: number, targetId: number) => {
     setLoading(true);
     const { token } = getAuth();
     try {
       const res = await fetch(`${API_BASE}/dashboard/replace`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  },
-  body: JSON.stringify({
-    source_schedule_id: sourceId,
-    target_schedule_id: targetId,
-  }),
-});
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          source_schedule_id: sourceId,
+          target_schedule_id: targetId,
+        }),
+      });
       if (!res.ok) throw new Error("Move failed");
       showToast("Room reserved successfully!", "ok");
       setMoveState({ phase: "idle" });
@@ -204,32 +205,33 @@ export default function Dashboard() {
     }
   };
 
-  // ── Derived state ──────────────────────────────────────────────────────────
+  // FIX 1: Safe calendar navigation — never mutate the existing Date object
+  const prevMonth = () =>
+    setCalDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
+  const nextMonth = () =>
+    setCalDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
+
   const filteredRooms = useMemo(
-  () =>
-    rooms.filter((r) => {
-      const q = search.toLowerCase();
-
-      const matchSearch =
-        r.room.toLowerCase().includes(q) ||
-        r.subject.toLowerCase().includes(q) ||
-        r.professor.toLowerCase().includes(q);
-
-      const matchStatus = statusFilter === "all" || r.status === statusFilter;
-
-      let matchStartTime = true;
-
-if (startTimeFilter !== "all") {
-  const filterMinutes = toMinutes(startTimeFilter);
-  const roomStart = toMinutes(r.startTime);
-
-  matchStartTime = roomStart === filterMinutes;
-}
-
-      return matchSearch && matchStatus && matchStartTime;
-    }),
-  [rooms, search, statusFilter, startTimeFilter]
-);
+    () =>
+      rooms.filter((r) => {
+        const q = search.toLowerCase();
+        const matchSearch =
+          r.room.toLowerCase().includes(q) ||
+          r.subject.toLowerCase().includes(q) ||
+          r.professor.toLowerCase().includes(q);
+        const matchStatus = statusFilter === "all" || r.status === statusFilter;
+        const roomEnd = toMinutes(r.endTime);
+        const matchActive = roomEnd < 0 || roomEnd > currentMinute;
+        let matchStartTime = true;
+        if (startTimeFilter !== "all") {
+          const filterMinutes = toMinutes(startTimeFilter);
+          const roomStart = toMinutes(r.startTime);
+          matchStartTime = roomStart === filterMinutes;
+        }
+        return matchSearch && matchStatus && matchActive && matchStartTime;
+      }),
+    [rooms, search, statusFilter, startTimeFilter, currentMinute]
+  );
 
   const calendarDays = useMemo(() => {
     const today = new Date();
@@ -238,7 +240,6 @@ if (startTimeFilter !== "all") {
     const firstDow    = new Date(year, month, 1).getDay();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const prevDays    = new Date(year, month, 0).getDate();
-
     const days: { d: number; type: "other" | "current" | "today"; event?: boolean }[] = [];
     for (let i = firstDow - 1; i >= 0; i--) {
       days.push({ d: prevDays - i, type: "other" });
@@ -271,7 +272,6 @@ if (startTimeFilter !== "all") {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
 
-  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
       <style>{`
@@ -303,10 +303,8 @@ if (startTimeFilter !== "all") {
         html, body, #__next { height:100%; width:100%; overflow:hidden; }
         body { font-family:'Exo 2',sans-serif; background:var(--bg); color:var(--text); }
 
-        /* ── LAYOUT ── */
         .s-root { display:flex; width:100vw; height:100vh; overflow:hidden; }
 
-        /* ── SIDEBAR ── */
         .s-sidebar {
           width:200px; min-width:200px; height:100vh; background:var(--sidebar);
           border-right:1px solid var(--card-border); display:flex; flex-direction:column;
@@ -329,11 +327,12 @@ if (startTimeFilter !== "all") {
           color:white; border-bottom:1px solid var(--card-border);
           letter-spacing:1px; width:100%; text-align:center;
         }
+        /* FIX 4: role="button" + button-like reset so it's accessible */
         .s-nav a {
           display:flex; align-items:center; gap:10px; padding:11px 14px; border-radius:8px;
           color:var(--muted); font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:600;
           letter-spacing:1.5px; text-transform:uppercase; text-decoration:none;
-          transition:all .2s; margin-bottom:3px; cursor:pointer;
+          transition:all .2s; margin-bottom:3px; cursor:pointer; background:none; border:none; width:100%;
         }
         .s-nav a:hover, .s-nav a.active {
           background:var(--accent-dim); color:var(--text); box-shadow:inset 3px 0 0 var(--accent);
@@ -362,7 +361,6 @@ if (startTimeFilter !== "all") {
         .s-logout:hover { background:rgba(239,68,68,.12); color:#f87171; }
         .s-logout svg { width:17px; height:17px; opacity:.8; flex-shrink:0; }
 
-        /* ── MAIN ── */
         .s-main { flex:1; display:flex; flex-direction:column; height:100vh; overflow:hidden; min-width:0; }
         .s-topbar {
           height:60px; min-height:60px; background:var(--sidebar);
@@ -378,7 +376,6 @@ if (startTimeFilter !== "all") {
         }
         .s-topbar-right { display:flex; align-items:center; gap:10px; flex-shrink:0; }
 
-        /* ── SEARCH & FILTER (student style) ── */
         .search-bar {
           background:var(--card-solid); border:1px solid var(--card-border);
           border-radius:8px; padding:7px 13px; color:var(--text);
@@ -396,7 +393,6 @@ if (startTimeFilter !== "all") {
         .filter-btn:hover { border-color:var(--accent); }
         .filter-btn option { background:var(--card-solid); color:var(--text); }
 
-        /* ── CONTENT ── */
         .s-content { flex:1; display:flex; overflow:hidden; min-height:0; }
         .s-rooms { flex:1; padding:20px 24px; overflow-y:auto; min-width:0; }
         .s-section-header {
@@ -412,26 +408,28 @@ if (startTimeFilter !== "all") {
           font-size:11px; font-family:'Rajdhani',sans-serif; font-weight:600; color:var(--accent2);
         }
         .s-date-sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
-        .s-rooms-grid {
-          display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:14px;
-        }
 
-        /* ── HINT BAR ── */
+        /* FIX 3: hint bar is now a full-width row below the header, not crammed inside it */
         .hint-bar {
           display:flex; align-items:center; gap:10px; font-size:12px; color:var(--move);
           background:var(--move-dim); border:1px solid rgba(245,158,11,.25);
-          border-radius:8px; padding:7px 13px; animation:fadeIn .2s ease;
+          border-radius:8px; padding:7px 13px; margin-bottom:12px;
+          animation:fadeIn .2s ease;
         }
+        .hint-bar span { flex:1; }
         @keyframes fadeIn { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:none} }
         .cancel-btn {
           background:transparent; border:1px solid var(--card-border);
           border-radius:6px; padding:5px 12px; color:var(--muted);
           font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
-          letter-spacing:1px; text-transform:uppercase; cursor:pointer; transition:all .2s;
+          letter-spacing:1px; text-transform:uppercase; cursor:pointer; transition:all .2s; flex-shrink:0;
         }
         .cancel-btn:hover { border-color:var(--muted); color:var(--text); }
 
-        /* ── ROOM CARD ── */
+        .s-rooms-grid {
+          display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:14px;
+        }
+
         .room-card {
           background:var(--card-solid); border:1px solid var(--card-border);
           border-radius:12px; padding:18px; display:flex; flex-direction:column; gap:10px;
@@ -480,7 +478,6 @@ if (startTimeFilter !== "all") {
         .rc-detail-row svg { width:12px; height:12px; flex-shrink:0; opacity:.7; }
         .rc-detail-row span { color:#94a3b8; }
 
-        /* ── ACTION BUTTONS ── */
         .action-btn {
           width:100%; padding:9px; border:none; border-radius:8px;
           font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:700;
@@ -513,7 +510,6 @@ if (startTimeFilter !== "all") {
         }
         .action-btn:disabled { opacity:.5; cursor:default; }
 
-        /* ── RIGHT PANEL (student style) ── */
         .s-right-panel {
           width:252px; min-width:252px; border-left:1px solid var(--card-border);
           display:flex; flex-direction:column; overflow-y:auto; background:var(--sidebar); flex-shrink:0;
@@ -526,7 +522,6 @@ if (startTimeFilter !== "all") {
         }
         .panel-title svg { width:14px; height:14px; }
 
-        /* ── CALENDAR (student style) ── */
         .cal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
         .cal-month  { font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:700; letter-spacing:1px; }
         .cal-nav    { display:flex; gap:4px; }
@@ -555,7 +550,6 @@ if (startTimeFilter !== "all") {
           width:3px; height:3px; border-radius:50%; background:var(--accent2);
         }
 
-        /* ── TOAST ── */
         .toast {
           position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
           padding:11px 22px; border-radius:999px; font-size:13px; font-weight:600;
@@ -568,7 +562,6 @@ if (startTimeFilter !== "all") {
           from{opacity:0;transform:translate(-50%,10px)} to{opacity:1;transform:translate(-50%,0)}
         }
 
-        /* ── PROFILE MODAL ── */
         .modal-overlay {
           position:fixed; inset:0; background:rgba(0,0,0,.75); backdrop-filter:blur(6px);
           display:flex; align-items:center; justify-content:center;
@@ -605,7 +598,6 @@ if (startTimeFilter !== "all") {
         }
         .modal-cancel:hover { border-color:var(--muted); }
 
-        /* ── LOGOUT MODAL ── */
         .logout-overlay {
           position:fixed; inset:0; background:rgba(0,0,0,.75); backdrop-filter:blur(6px);
           display:flex; align-items:center; justify-content:center;
@@ -640,7 +632,6 @@ if (startTimeFilter !== "all") {
         }
         .btn-confirm:hover { background:rgba(239,68,68,.25); border-color:#ef4444; }
 
-        /* ── SCROLLBAR ── */
         ::-webkit-scrollbar { width:4px; }
         ::-webkit-scrollbar-track { background:transparent; }
         ::-webkit-scrollbar-thumb { background:var(--card-border); border-radius:4px; }
@@ -648,18 +639,18 @@ if (startTimeFilter !== "all") {
       `}</style>
 
       <div className="s-root">
-        {/* ── SIDEBAR ── */}
         <aside className="s-sidebar">
           <div className="s-logo">CCSE</div>
           <nav className="s-nav">
             <div className="user-name-display-side">{userName}</div>
-            <a onClick={() => setIsProfileOpen(true)}>
+            {/* FIX 4: Use <button> instead of <a> for clickable non-link elements */}
+            <button className="s-nav a" role="button" onClick={() => setIsProfileOpen(true)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                 <circle cx="12" cy="7" r="4"/>
               </svg>
               Profile
-            </a>
+            </button>
           </nav>
           <div className="s-bottom">
             <div className="s-user-badge">
@@ -680,9 +671,7 @@ if (startTimeFilter !== "all") {
           </div>
         </aside>
 
-        {/* ── MAIN ── */}
         <div className="s-main">
-          {/* Topbar */}
           <div className="s-topbar">
             <div className="s-page-title">Teacher Dashboard</div>
             <div className="s-topbar-right">
@@ -692,61 +681,63 @@ if (startTimeFilter !== "all") {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
+              {/* FIX 2: Added missing "avail" / Available filter option */}
               <select
-  className="filter-btn"
-  value={statusFilter}
-  onChange={(e) => setStatusFilter(e.target.value as any)}
->
-  <option value="all">All Rooms</option>
-  <option value="unavail">Occupied</option>
-  <option value="vacant">Vacant</option>
-</select>
+                className="filter-btn"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
+              >
+                <option value="all">All Rooms</option>
+                <option value="avail">Available</option>
+                <option value="unavail">Occupied</option>
+                <option value="vacant">Vacant</option>
+              </select>
 
-<select
-  className="filter-btn"
-  value={startTimeFilter}
-  onChange={(e) => setStartTimeFilter(e.target.value)}
->
-  <option value="all">All Times</option>
-  <option value="08:00">8:00 AM</option>
-  <option value="09:30">9:30 AM</option>
-  <option value="11:00">11:00 AM</option>
-  <option value="12:30">12:30 PM</option>
-  <option value="14:00">2:00 PM</option>
-  <option value="15:30">3:30 PM</option>
-  <option value="17:00">5:00 PM</option>
-  <option value="18:30">6:30 PM</option>
-</select>
+              <select
+                className="filter-btn"
+                value={startTimeFilter}
+                onChange={(e) => setStartTimeFilter(e.target.value)}
+              >
+                <option value="all">All Times</option>
+                <option value="08:00">8:00 AM</option>
+                <option value="09:30">9:30 AM</option>
+                <option value="11:00">11:00 AM</option>
+                <option value="12:30">12:30 PM</option>
+                <option value="14:00">2:00 PM</option>
+                <option value="15:30">3:30 PM</option>
+                <option value="17:00">5:00 PM</option>
+                <option value="18:30">6:30 PM</option>
+              </select>
             </div>
           </div>
 
           <div className="s-content">
-            {/* Rooms section */}
             <div className="s-rooms">
               <div className="s-section-header">
                 <div>
                   <div className="s-section-label">Today's Schedule</div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span className="s-room-count">{filteredRooms.length} Rooms</span>
-                  {moveState.phase !== "idle" && (
-                    <div className="hint-bar">
-                      <span>
-                        {moveState.phase === "source-selected"
-                          ? "Now click any available room to move your class there."
-                          : "Now click one of your classes to assign it to that room."}
-                      </span>
-                      <button className="cancel-btn" onClick={cancelMove}>Cancel</button>
-                    </div>
-                  )}
-                </div>
+                <span className="s-room-count">{filteredRooms.length} Rooms</span>
               </div>
+
+              {/* FIX 3: Hint bar is now full-width below the header row, not crammed beside the room count */}
+              {moveState.phase !== "idle" && (
+                <div className="hint-bar">
+                  <span>
+                    {moveState.phase === "source-selected"
+                      ? "Now click any available room to move your class there."
+                      : "Now click one of your classes to assign it to that room."}
+                  </span>
+                  <button className="cancel-btn" onClick={cancelMove}>Cancel</button>
+                </div>
+              )}
+
               <div className="s-date-sub">{todayLabel}</div>
 
               <div className="s-rooms-grid">
                 {filteredRooms.map((room) => {
-                  const isAvail   = room.status === "avail";
-                  const isVacant  = room.status === "vacant";
+                  const isAvail    = room.status === "avail";
+                  const isVacant   = room.status === "vacant";
                   const isOwnClass =
                     room.teacherId != null &&
                     teacherId      != null &&
@@ -756,74 +747,41 @@ if (startTimeFilter !== "all") {
                     moveState.phase === "source-selected" &&
                     moveState.sourceId === room.id;
 
-                  // ── STRICT overlap detection ───────────────────────────────
-let hasOverlap = false;
+                  // FIX 5: Overlap check now correctly queries OTHER occupied rooms in the
+                  // same room slot, NOT the candidate card itself (which is avail/vacant).
+                  let hasOverlap = false;
+                  if (moveState.phase === "source-selected" && (isAvail || isVacant)) {
+                    const sourceRoom = rooms.find((r) => r.id === moveState.sourceId);
+                    if (sourceRoom) {
+                      // Check if any OTHER occupied schedule in the same physical room conflicts
+                      hasOverlap = rooms.some((r) => {
+                        if (r.id === room.id) return false;          // skip the candidate itself
+                        if (r.room !== room.room) return false;      // same physical room only
+                        if (r.status !== "unavail") return false;    // only occupied rows matter
+                        return timesOverlap(
+                          sourceRoom.startTime,
+                          sourceRoom.endTime,
+                          r.startTime,
+                          r.endTime
+                        );
+                      });
+                    }
+                  }
 
-if (
-  moveState.phase === "source-selected" &&
-  (isAvail || isVacant)
-) {
-  const sourceRoom = rooms.find(
-    (r) => r.id === moveState.sourceId
-  );
-
-  if (sourceRoom) {
-    // ONLY block if THIS exact target card conflicts
-    hasOverlap =
-      room.status === "unavail" &&
-      timesOverlap(
-        sourceRoom.startTime,
-        sourceRoom.endTime,
-        room.startTime,
-        room.endTime
-      );
-  }
-}
-
-// target-first flow
-let hasOverlapAsSource = false;
-
-if (
-  moveState.phase === "target-selected" &&
-  isOwnClass
-) {
-  const targetRoom = rooms.find(
-    (r) => r.id === moveState.targetId
-  );
-
-  if (targetRoom) {
-    hasOverlapAsSource = rooms.some((r) => {
-      // ignore selected target itself
-      if (r.id === targetRoom.id) return false;
-
-      // only same room
-      if (r.room !== targetRoom.room) return false;
-
-      // only occupied rows matter
-      if (r.status !== "unavail") return false;
-
-      // don't compare against itself
-      if (r.id === room.id) return false;
-
-      // invalid times
-      if (
-        !room.startTime ||
-        !room.endTime ||
-        !r.startTime ||
-        !r.endTime
-      ) {
-        return false;
-      }
-
-      return timesOverlap(
-        room.startTime,
-        room.endTime,
-        r.startTime,
-        r.endTime
-      );
-    });
-  }
-}
+                  let hasOverlapAsSource = false;
+                  if (moveState.phase === "target-selected" && isOwnClass) {
+                    const targetRoom = rooms.find((r) => r.id === moveState.targetId);
+                    if (targetRoom) {
+                      hasOverlapAsSource = rooms.some((r) => {
+                        if (r.id === targetRoom.id) return false;
+                        if (r.room !== targetRoom.room) return false;
+                        if (r.status !== "unavail") return false;
+                        if (r.id === room.id) return false;
+                        if (!room.startTime || !room.endTime || !r.startTime || !r.endTime) return false;
+                        return timesOverlap(room.startTime, room.endTime, r.startTime, r.endTime);
+                      });
+                    }
+                  }
 
                   const isBlocked = hasOverlap || hasOverlapAsSource;
 
@@ -831,18 +789,15 @@ if (
                     moveState.phase === "target-selected" &&
                     moveState.targetId === room.id;
 
-                  // ── Determine button appearance ────────────────────────────
                   let btnLabel: string;
                   let btnClass: string;
                   let btnDisabled = false;
 
                   if (isSource) {
-                    // This card is the selected source class
                     btnLabel    = "✓ Selected — pick a room";
                     btnClass    = "action-btn selected";
                     btnDisabled = true;
                   } else if (isTargetLocked) {
-                    // This card is the locked target room
                     btnLabel    = "✓ Target room — pick your class";
                     btnClass    = "action-btn selected";
                     btnDisabled = true;
@@ -851,11 +806,9 @@ if (
                     btnClass    = "action-btn conflict";
                     btnDisabled = true;
                   } else if ((isAvail || isVacant) && moveState.phase === "source-selected") {
-                    // Source picked — this is a valid target room
                     btnLabel = "Move class here";
                     btnClass = "action-btn target";
                   } else if ((isAvail || isVacant) && moveState.phase === "idle") {
-                    // No selection yet — teacher clicks a room first, then picks their class
                     btnLabel = "Reserve this room";
                     btnClass = "action-btn reserve";
                   } else if (isOwnClass && moveState.phase === "target-selected" && isBlocked) {
@@ -863,7 +816,6 @@ if (
                     btnClass    = "action-btn conflict";
                     btnDisabled = true;
                   } else if (isOwnClass && moveState.phase === "target-selected") {
-                    // Target room locked — pick which of your classes to put here
                     btnLabel = "Assign this class here";
                     btnClass = "action-btn target";
                   } else if (isOwnClass && moveState.phase === "idle") {
@@ -877,23 +829,18 @@ if (
 
                   function handleClick() {
                     if (isBlocked || btnDisabled) return;
-
                     if (moveState.phase === "idle") {
                       if (isAvail || isVacant) {
-                        // Teacher clicked a room first → lock it as target, ask them to pick a class
                         selectTarget(room.id);
                       } else if (isOwnClass) {
-                        // Teacher clicked their class first → lock it as source, ask them to pick a room
                         selectSource(room.id);
                       }
                     } else if (moveState.phase === "source-selected") {
                       if (isAvail || isVacant) {
-                        // Source already picked, now picked a target room
                         void reserveRoom(moveState.sourceId, room.id);
                       }
                     } else if (moveState.phase === "target-selected") {
                       if (isOwnClass) {
-                        // Target already picked, now picked their class as source
                         void reserveRoom(room.id, moveState.targetId);
                       }
                     }
@@ -954,7 +901,6 @@ if (
               </div>
             </div>
 
-            {/* Right Panel */}
             <div className="s-right-panel">
               <div className="panel-block">
                 <div className="panel-title">
@@ -970,9 +916,10 @@ if (
                   <span className="cal-month">
                     {calDate.toLocaleString("default", { month: "long", year: "numeric" })}
                   </span>
+                  {/* FIX 1: Use pure functions that create new Date objects — no mutation */}
                   <div className="cal-nav">
-                    <button onClick={() => setCalDate(new Date(calDate.setMonth(calDate.getMonth() - 1)))}>‹</button>
-                    <button onClick={() => setCalDate(new Date(calDate.setMonth(calDate.getMonth() + 1)))}>›</button>
+                    <button onClick={prevMonth}>‹</button>
+                    <button onClick={nextMonth}>›</button>
                   </div>
                 </div>
                 <div className="cal-grid">
@@ -1032,7 +979,6 @@ if (
         </div>
       </div>
 
-      {/* Profile Modal */}
       <div
         className={`modal-overlay ${isProfileOpen ? "open" : ""}`}
         onClick={() => setIsProfileOpen(false)}
@@ -1052,7 +998,6 @@ if (
         </div>
       </div>
 
-      {/* Logout Modal */}
       <div
         className={`logout-overlay ${isLogoutOpen ? "open" : ""}`}
         onClick={() => setIsLogoutOpen(false)}
