@@ -86,8 +86,9 @@ export default function SignupPage() {
     setLoading(true);
     setMessage("");
     try {
-      const res = await fetch(
-        "http://localhost:8080/api/public/v1/authentication/register",
+      const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8080";
+const res = await fetch(
+  `${API_BASE}/api/public/v1/authentication/register`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -123,8 +124,10 @@ export default function SignupPage() {
     setLoading(true);
     setMessage("");
     try {
-      const res = await fetch(
-        "http://localhost:8080/api/public/v1/authentication/resend-verification",
+      // Line 2 - in handleResend
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8080";
+const res = await fetch(
+  `${API_BASE}/api/public/v1/authentication/resend-verification`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

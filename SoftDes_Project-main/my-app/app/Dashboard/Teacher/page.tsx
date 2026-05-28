@@ -24,7 +24,9 @@ type MoveState =
   | { phase: "target-selected"; targetId: number };
 
 const EVENT_DAYS: number[] = [3, 8, 15, 21];
-const API_BASE = "http://localhost:8080/api/private/v1";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE
+  ? `${process.env.NEXT_PUBLIC_API_BASE}/api/private/v1`
+  : "http://localhost:8080/api/private/v1";
 
 function formatTime(t: string): string {
   if (!t) return "";

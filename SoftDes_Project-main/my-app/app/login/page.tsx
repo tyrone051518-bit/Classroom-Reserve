@@ -73,8 +73,10 @@ export default function LoginPage() {
   }
 
   try {
-    const res = await fetch(
-      "http://localhost:8080/api/public/v1/authentication/login",
+    const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8080";
+
+const res = await fetch(
+  `${API_BASE}/api/public/v1/authentication/login`,
       {
         method: "POST",
         headers: {
