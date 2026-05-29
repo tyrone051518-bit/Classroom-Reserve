@@ -29,7 +29,7 @@ func getDayAbbrev(t time.Time) string {
 	case time.Friday:
 		return "FRI"
 	case time.Saturday:
-		return ""
+		return "SAT"
 	case time.Sunday:
 		return ""
 	default:
