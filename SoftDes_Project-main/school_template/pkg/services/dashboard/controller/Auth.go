@@ -139,7 +139,7 @@ func GetActiveSchedule(c fiber.Ctx) error {
 
 	// Only Mon-Thu are valid school days
 	switch today.Weekday() {
-	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday:
+	case time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Saturday:
 		// ok
 	default:
 		return c.JSON(fiber.Map{"data": []SCHEDmodels.ActiveSchedule{}})
