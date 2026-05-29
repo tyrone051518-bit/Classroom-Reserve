@@ -99,7 +99,7 @@ export default function StudentDashboard() {
   const loadSchedule = useCallback(async () => {
     const { token } = getAuth();
     const dow = new Date().getDay();
-    if (dow === 0 || dow === 5 || dow === 6) {
+    if (dow === 0 || dow === 5) {
       setIsSchoolDay(false);
       setLoading(false);
       return;
@@ -736,7 +736,7 @@ export default function StudentDashboard() {
                   </div>
                   <div className="no-school-title">No Classes Today</div>
                   <div className="no-school-desc">
-                    Classes run Monday to Thursday. Enjoy your day off — see you next school day!
+                    Classes run Monday to Thursday and Saturday. Enjoy your day off — see you next school day!
                   </div>
                 </div>
               ) : (
